@@ -1,4 +1,4 @@
-# ArXiv Agent (v0.2.0)
+# ArXiv Agent
 
 > **Your AI-Powered Research Assistant.**  
 > Automatically discover, analyze, and implement research from arXiv papers using the power of local & cloud LLMs.
