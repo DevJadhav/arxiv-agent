@@ -26,12 +26,19 @@
 Prerequisites: Python 3.10+ and `pip`/`uv`.
 
 ```bash
-# Install via pip
-pip install arxiv-agent
+# Clone the repository
+git clone https://github.com/DevJadhav/arxiv-agent.git
+cd arxiv-agent
+
+# Install via pip (from local source)
+pip install .
 
 # OR strictly via uv (Recommended)
-uv tool install arxiv-agent
+# Run this from the project root to install the local version
+uv tool install . --force
 ```
+
+
 
 ## ⚡ Quick Start
 
