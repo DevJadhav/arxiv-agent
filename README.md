@@ -11,7 +11,7 @@
 
 **ArXiv Agent** is a terminal-based intelligent assistant designed for researchers and engineers who want to stay on top of the latest AI trends without drowning in PDFs. It combines **daily digests**, **RAG-powered chat**, and **automated implementation** into a single, cohesive workflow.
 
-![ArXiv Agent Demo Placeholder](docs/demo.gif)
+![ArXiv Agent Demo](docs/demo.png)
 
 ## 🚀 Key Features
 
