@@ -1,7 +1,7 @@
 # ArXiv Agent
 
 > **Your AI-Powered Research Assistant.**  
-> Automatically discover, analyze, and implement research from arXiv papers using the power of local & cloud LLMs.
+> Automatically discover, analyze, and implement research from arXiv papers using the power of advanced LLMs.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -18,8 +18,9 @@
 *   **📰 Smart Daily Digests**: Wake up to a personalized summary of the latest papers in your field (e.g., "Agentic AI", "Vision Transformers"), delivered directly to your terminal or markdown reader.
 *   **💬 Chat with Papers**: Use RAG (Retrieval Augmented Generation) to ask questions across your entire library or deep-dive into a specific paper. "How does the ablation study in Table 3 support their claim?"
 *   **🛠️ Paper-to-Code**: Automatically generate a Python implementation plan and scaffolding based on the methodology section of a paper.
-*   **🧠 Multi-Model Support**: Bring your own keys! Supports **Anthropic (Claude 4.5)**, **OpenAI (GPT-5.2)**, and **Google Gemini (3 Pro)**.
-*   **🔒 Layout & Privacy First**: Everything is stored locally (`~/.local/share/arxiv-agent`). API keys are secured in your system keyring.
+*   **🧠 Multi-Model Support**: Bring your own keys! Supports **Anthropic**, **OpenAI**, and **Google Gemini** with dynamic model selection.
+*   **🔒 Layout & Privacy First**: Data is stored locally (`~/.local/share/arxiv-agent`). API keys are secured in your system keyring.
+
 
 ## 📦 Installation
 
@@ -79,15 +80,22 @@ arxiv-agent chat 2310.12345
 
 ## 🛠️ Configuration
 
+## 🛠️ Configuration
+ 
 You can customize which models are used for different tasks (e.g., use Claude Opus for coding but Gemini Flash for chat).
-
+ 
 ```bash
 # List current config
 arxiv-agent config models show
-
-# Use GPT-4o for the coding agent
-arxiv-agent config models set code --provider openai --model gpt-4o
+ 
+# Set model interactively (Prompted for Agent -> Provider -> Model)
+arxiv-agent config models set
+ 
+# Or define specific agent/provider to list models for
+arxiv-agent config models set code --provider openai
 ```
+
+The CLI will automatically fetch available models from your API key and present a scrollable list for selection.
 
 ## 📚 Documentation
 

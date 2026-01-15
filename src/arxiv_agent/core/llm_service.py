@@ -588,6 +588,68 @@ class LLMService:
         self.history = history.copy()
 
 
+    def list_models(self) -> list[str]:
+        """List available models for the current provider."""
+        if self.provider == "anthropic":
+            return self._list_anthropic_models()
+        elif self.provider == "openai":
+            return self._list_openai_models()
+        elif self.provider == "gemini":
+            return self._list_gemini_models()
+        else:
+            return []
+
+    def _list_anthropic_models(self) -> list[str]:
+        """List Anthropic models."""
+        # Anthropic now supports listing models
+        try:
+            client = self._get_anthropic()
+            models = client.models.list()
+            return sorted([m.id for m in models.data], reverse=True)
+        except Exception as e:
+            logger.warning(f"Failed to list Anthropic models: {e}")
+            # Fallback to known models if API fails or key is invalid/missing
+            return [
+                self.settings.llm.anthropic_model_advanced,
+                self.settings.llm.anthropic_model,
+                self.settings.llm.anthropic_model_fast,
+            ]
+
+    def _list_openai_models(self) -> list[str]:
+        """List OpenAI models."""
+        try:
+            client = self._get_openai()
+            # Set a timeout for the list operation to prevent hangs
+            models = client.models.list(timeout=10.0)
+            # Filter for chat models (gpt-*)
+            return sorted(
+                [m.id for m in models.data if m.id.startswith("gpt-") and "instruct" not in m.id and "realtime" not in m.id],
+                reverse=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to list OpenAI models: {e}")
+            return [
+                self.settings.llm.openai_model_advanced,
+                self.settings.llm.openai_model,
+            ]
+
+    def _list_gemini_models(self) -> list[str]:
+        """List Gemini models."""
+        try:
+            genai = self._get_gemini()
+            models = genai.list_models()
+            return sorted(
+                [m.name.replace("models/", "") for m in models if "generateContent" in m.supported_generation_methods],
+                reverse=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to list Gemini models: {e}")
+            return [
+                self.settings.llm.gemini_model_advanced,
+                self.settings.llm.gemini_model,
+            ]
+
+
 def get_llm_service(
     provider: LLMProviderType | None = None,
     model: str | None = None,

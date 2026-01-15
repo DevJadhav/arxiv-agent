@@ -212,7 +212,7 @@ def show_model_config():
 
 @models_app.command("set")
 def set_agent_model(
-    agent: str = typer.Argument(..., help="Agent name: analyzer, chat, code, digest"),
+    agent: Optional[str] = typer.Argument(None, help="Agent name: analyzer, chat, code, digest"),
     provider: Optional[str] = typer.Option(None, "--provider", "-p", help="Provider override"),
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Model override"),
 ):
@@ -222,28 +222,86 @@ def set_agent_model(
         arxiv-agent config models set code --provider openai --model gpt-4o
         arxiv-agent config models set analyzer --model claude-opus-4-5-20250101
     """
-    agent = agent.lower()
     valid_agents = ["analyzer", "chat", "code", "digest"]
+    
+    if not agent:
+        import questionary
+        agent = questionary.select(
+            "Select agent to configure:",
+            choices=valid_agents
+        ).ask()
+        
+        if not agent:
+            raise typer.Abort()
+        
+    agent = agent.lower()
     
     if agent not in valid_agents:
         console.print(f"[red]Invalid agent: {agent}[/]")
         console.print(f"[dim]Valid agents: {', '.join(valid_agents)}[/]")
         raise typer.Exit(1)
     
-    if not provider and not model:
-        console.print("[red]Specify at least --provider or --model[/]")
-        raise typer.Exit(1)
-    
     settings = get_settings()
     config = getattr(settings.llm, f"{agent}_config")
     
+    # Provider selection
+    if not provider:
+        # Defaults to current or global default
+        current_provider = config.provider or settings.llm.default_provider
+        
+        # Interactive provider selection if not provided
+        if not provider and not model:
+            import questionary
+            provider = questionary.select(
+                "Select provider:",
+                choices=["anthropic", "openai", "gemini"],
+                default=current_provider
+            ).ask()
+            
+            if not provider:
+                raise typer.Abort()
+        else:
+            provider = current_provider
+
     if provider:
-        valid_providers = ["anthropic", "openai", "gemini"]
-        if provider not in valid_providers:
-            console.print(f"[red]Invalid provider: {provider}[/]")
-            raise typer.Exit(1)
-        config.provider = provider
-    
+         valid_providers = ["anthropic", "openai", "gemini"]
+         if provider not in valid_providers:
+             console.print(f"[red]Invalid provider: {provider}[/]")
+             raise typer.Exit(1)
+         config.provider = provider
+
+    # Model selection
+    if not model:
+        # If model not provided, prompt for it
+        from arxiv_agent.core.llm_service import get_llm_service
+        
+        try:
+            with console.status(f"Fetching available models for {provider}..."):
+                # Create temp service to fetch models
+                llm = get_llm_service(provider=provider)
+                available_models = llm.list_models()
+        except Exception as e:
+            console.print(f"[yellow]Warning: Failed to fetch models: {e}[/]")
+            available_models = []
+
+        if available_models:
+             import questionary
+             # Use current model as default if valid
+             current_model = config.model or settings.llm.get_provider_model(provider)
+             default_model = current_model if current_model in available_models else available_models[0]
+             
+             model = questionary.select(
+                 f"Select model for {provider}:",
+                 choices=available_models,
+                 default=default_model
+             ).ask()
+             
+             if not model:
+                 raise typer.Abort()
+        else:
+             # Fallback to manual entry if list failed
+             model = typer.prompt("Enter model name (listing failed)")
+
     if model:
         config.model = model
     
@@ -253,10 +311,8 @@ def set_agent_model(
     console.print(f"  Model: [cyan]{new_model}[/]")
     
     console.print(f"\n[dim]To persist, add to your shell profile:[/]")
-    if provider:
-        console.print(f"  export ARXIV_AGENT_LLM__{agent.upper()}_CONFIG__PROVIDER={provider}")
-    if model:
-        console.print(f"  export ARXIV_AGENT_LLM__{agent.upper()}_CONFIG__MODEL={model}")
+    console.print(f"  export ARXIV_AGENT_LLM__{agent.upper()}_CONFIG__PROVIDER={new_provider}")
+    console.print(f"  export ARXIV_AGENT_LLM__{agent.upper()}_CONFIG__MODEL={new_model}")
 
 
 @models_app.command("reset")
