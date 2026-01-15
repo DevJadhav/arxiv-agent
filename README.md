@@ -97,7 +97,17 @@ arxiv-agent config models set code --provider openai
 
 The CLI will automatically fetch available models from your API key and present a scrollable list for selection.
 
+## 🛡️ Guardrails
+
+ArXiv Agent includes built-in safety and cost guardrails:
+
+*   **Token Usage Tracking**: Daily usage is tracked locally in `~/.local/share/arxiv-agent/usage.json`.
+*   **Daily Token Limit**: Warns if you exceed 100k daily tokens (configurable).
+*   **Context Window**: Checks request size before sending to avoid truncation.
+*   **JSON Repair**: Automatically attempts to fix malformed JSON responses from LLMs.
+
 ## 📚 Documentation
+
 
 *   [**Architecture & Design**](docs/ARCHITECTURE.md): Deep dive into the system internals, database schema, and agent workflows.
 *   [**Contribution Guide**](docs/CONTRIBUTING.md): How to set up a dev environment and contribute.

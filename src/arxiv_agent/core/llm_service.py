@@ -3,6 +3,7 @@
 import asyncio
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import AsyncGenerator, Literal, Any
 
 from loguru import logger
@@ -21,6 +22,58 @@ class LLMResponse:
     input_tokens: int = 0
     output_tokens: int = 0
     finish_reason: str | None = None
+
+
+class TokenTracker:
+    """Tracks token usage validation."""
+    
+    def __init__(self, path: Path):
+        self.path = path
+        self._load()
+        
+    def _load(self):
+        if self.path.exists():
+            try:
+                import json
+                with open(self.path, "r") as f:
+                    self.data = json.load(f)
+            except Exception:
+                self.data = {"daily": {}, "total": {}}
+        else:
+            self.data = {"daily": {}, "total": {}}
+            
+    def _save(self):
+        try:
+            import json
+            with open(self.path, "w") as f:
+                json.dump(self.data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save token usage: {e}")
+            
+    def track(self, provider: str, model: str, input_tokens: int, output_tokens: int):
+        import datetime
+        today = datetime.date.today().isoformat()
+        
+        # Init keys
+        if today not in self.data["daily"]:
+            self.data["daily"][today] = 0
+        
+        total_tokens = input_tokens + output_tokens
+        self.data["daily"][today] += total_tokens
+        
+        # Track per-model totals
+        key = f"{provider}/{model}"
+        if key not in self.data["total"]:
+            self.data["total"][key] = 0
+        self.data["total"][key] += total_tokens
+        
+        self._save()
+        
+    def check_daily_limit(self, limit: int) -> bool:
+        import datetime
+        today = datetime.date.today().isoformat()
+        usage = self.data["daily"].get(today, 0)
+        return usage >= limit
 
 
 class LLMService:
@@ -70,8 +123,34 @@ class LLMService:
         self.max_tokens = self.settings.llm.max_tokens
         self.temperature = self.settings.llm.temperature
         
+        # Token Tracking
+        self.tracker = TokenTracker(self.settings.data_dir / "usage.json")
+        
         # Conversation history
         self.history: list[dict] = []
+        
+    def check_context_window(self, prompt: str, system_prompt: str | None = None) -> None:
+        """Check if request fits within context window."""
+        # Rough estimation (4 chars per token) to avoid heavy deps
+        estimated_tokens = len(prompt) / 4
+        if system_prompt:
+            estimated_tokens += len(system_prompt) / 4
+            
+        # Add history estimation
+        for msg in self.history:
+            estimated_tokens += len(msg["content"]) / 4
+            
+        limit = 120_000 # Default safe limit for most modern models
+        if "128k" in self.model or "opus" in self.model or "gpt-4" in self.model:
+             limit = 120_000
+        elif "flash" in self.model or "sonnet" in self.model:
+             limit = 180_000 
+             
+        if estimated_tokens > limit:
+             logger.warning(
+                 f"Request size ({int(estimated_tokens)} tokens) is approaching model limit (~{limit}). "
+                 "Truncation or errors may occur."
+             )
     
     def _get_api_key(self, provider: LLMProviderType) -> str:
         """Get API key for provider."""
@@ -168,6 +247,17 @@ class LLMService:
         if system_prompt:
             kwargs["system"] = system_prompt
         
+        # Guardrails
+        self.check_context_window(prompt, system_prompt)
+        
+        # Check limits
+        if self.settings.guardrails.warn_on_costly_request:
+            if self.tracker.check_daily_limit(self.settings.guardrails.max_daily_tokens):
+                logger.warning(
+                    f"Daily token limit ({self.settings.guardrails.max_daily_tokens}) exceeded! "
+                    "Proceeding, but be aware of costs."
+                )
+
         response = client.messages.create(**kwargs)
         
         content = response.content[0].text
@@ -176,6 +266,14 @@ class LLMService:
         if use_history:
             self.history.append({"role": "user", "content": prompt})
             self.history.append({"role": "assistant", "content": content})
+            
+        # Track usage
+        self.tracker.track(
+            "anthropic", 
+            self.model, 
+            response.usage.input_tokens, 
+            response.usage.output_tokens
+        )
         
         return LLMResponse(
             content=content,
@@ -204,6 +302,9 @@ class LLMService:
             messages.extend(self.history)
         messages.append({"role": "user", "content": prompt})
         
+        # Guardrails
+        self.check_context_window(prompt, system_prompt)
+
         response = client.chat.completions.create(
             model=self.model,
             max_completion_tokens=max_tokens or self.max_tokens,
@@ -217,13 +318,19 @@ class LLMService:
         if use_history:
             self.history.append({"role": "user", "content": prompt})
             self.history.append({"role": "assistant", "content": content})
+            
+        input_tokens = response.usage.prompt_tokens if response.usage else 0
+        output_tokens = response.usage.completion_tokens if response.usage else 0
+        
+        # Track usage
+        self.tracker.track("openai", self.model, input_tokens, output_tokens)
         
         return LLMResponse(
             content=content,
             model=self.model,
             provider="openai",
-            input_tokens=response.usage.prompt_tokens if response.usage else 0,
-            output_tokens=response.usage.completion_tokens if response.usage else 0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             finish_reason=response.choices[0].finish_reason,
         )
     
@@ -358,7 +465,35 @@ class LLMService:
         try:
             return json.loads(content)
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {e}\nContent: {content}")
+            logger.warning(f"Failed to parse JSON response: {e}. Content: {content}")
+            
+            if self.settings.guardrails.enable_json_repair:
+                logger.info("Attempting to repair JSON with LLM...")
+                repair_prompt = (
+                    f"The following JSON is invalid:\n{content}\n\n"
+                    f"Error: {str(e)}\n\n"
+                    "Please fix the JSON and return ONLY the valid JSON object."
+                )
+                try:
+                    repair_response = await self.agenerate(
+                        prompt=repair_prompt,
+                        system_prompt="You are a JSON repair tool. Return only valid JSON.",
+                        temperature=0.0,
+                    )
+                    # Clean repaired content
+                    repaired_content = repair_response.content.strip()
+                    if repaired_content.startswith("```json"):
+                        repaired_content = repaired_content[7:]
+                    elif repaired_content.startswith("```"):
+                        repaired_content = repaired_content[3:]
+                    if repaired_content.endswith("```"):
+                        repaired_content = repaired_content[:-3]
+                        
+                    return json.loads(repaired_content.strip())
+                except Exception as repair_e:
+                    logger.error(f"JSON repair failed: {repair_e}")
+                    raise ValueError(f"LLM failed to generate valid JSON after repair: {str(e)}")
+            
             raise ValueError(f"LLM failed to generate valid JSON: {str(e)}")
 
     async def _agenerate_anthropic(
@@ -392,6 +527,9 @@ class LLMService:
             kwargs["temperature"] = temperature
         else:
             kwargs["temperature"] = self.temperature
+
+        # Guardrails
+        self.check_context_window(prompt, system_prompt)
         
         response = await client.messages.create(**kwargs)
         
@@ -400,6 +538,14 @@ class LLMService:
         if use_history:
             self.history.append({"role": "user", "content": prompt})
             self.history.append({"role": "assistant", "content": content})
+            
+        # Track usage
+        self.tracker.track(
+            "anthropic", 
+            self.model, 
+            response.usage.input_tokens, 
+            response.usage.output_tokens
+        )
         
         return LLMResponse(
             content=content,
@@ -432,6 +578,9 @@ class LLMService:
             messages.extend(self.history)
         messages.append({"role": "user", "content": prompt})
         
+        # Guardrails
+        self.check_context_window(prompt, system_prompt)
+
         response = await client.chat.completions.create(
             model=self.model,
             max_completion_tokens=max_tokens or self.max_tokens,
@@ -444,13 +593,19 @@ class LLMService:
         if use_history:
             self.history.append({"role": "user", "content": prompt})
             self.history.append({"role": "assistant", "content": content})
+            
+        input_tokens = response.usage.prompt_tokens if response.usage else 0
+        output_tokens = response.usage.completion_tokens if response.usage else 0
+            
+        # Track usage
+        self.tracker.track("openai", self.model, input_tokens, output_tokens)
         
         return LLMResponse(
             content=content,
             model=self.model,
             provider="openai",
-            input_tokens=response.usage.prompt_tokens if response.usage else 0,
-            output_tokens=response.usage.completion_tokens if response.usage else 0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             finish_reason=response.choices[0].finish_reason,
         )
     

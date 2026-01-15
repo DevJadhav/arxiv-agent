@@ -176,6 +176,14 @@ class Paper2CodeSettings(BaseSettings):
     type_hints: bool = True
 
 
+class GuardrailsSettings(BaseSettings):
+    """Safety and cost guardrails."""
+    
+    max_daily_tokens: int = 100_000
+    warn_on_costly_request: bool = True
+    enable_json_repair: bool = True
+
+
 class Settings(BaseSettings):
     """Main application settings."""
     
@@ -198,6 +206,7 @@ class Settings(BaseSettings):
     
     # Nested settings
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    guardrails: GuardrailsSettings = Field(default_factory=GuardrailsSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
