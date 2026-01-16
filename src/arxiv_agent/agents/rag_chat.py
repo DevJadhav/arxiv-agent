@@ -1,5 +1,7 @@
 """RAG Chat agent for interactive paper Q&A."""
 
+from typing import AsyncGenerator
+
 from loguru import logger
 
 from arxiv_agent.agents.state import AgentState
@@ -196,3 +198,106 @@ Provide exactly 3 questions, one per line, without numbering."""
         
         questions = [q.strip() for q in response.content.strip().split("\n") if q.strip()]
         return questions[:3]
+    
+    async def stream_response(
+        self,
+        paper_id: str,
+        query: str,
+    ) -> AsyncGenerator[str, None]:
+        """Stream a chat response for real-time display.
+        
+        This method yields response chunks as they arrive from the LLM,
+        enabling real-time display in the chat UI for better UX.
+        
+        Args:
+            paper_id: Paper ID to chat about
+            query: User's question
+        
+        Yields:
+            Response text chunks as they arrive
+            
+        Example:
+            async for chunk in agent.stream_response(paper_id, query):
+                print(chunk, end="", flush=True)
+        """
+        if not paper_id.startswith("arxiv:"):
+            paper_id = f"arxiv:{paper_id}"
+        
+        # Get or create chat session
+        session = self.db.get_or_create_chat_session(paper_id)
+        
+        # Retrieve relevant context using hybrid search
+        results = self.vector_store.hybrid_search(
+            query=query,
+            paper_id=paper_id,
+            k=self.settings.retrieval.top_k,
+        )
+        
+        if not results:
+            logger.warning(f"No chunks found for paper {paper_id}")
+            paper = self.db.get_paper(paper_id)
+            if paper:
+                context = f"Title: {paper.title}\n\nAbstract: {paper.abstract}"
+            else:
+                yield "I don't have any context for this paper. Please analyze it first using 'arxiv-agent analyze'."
+                return
+        else:
+            context_parts = []
+            for result in results[:self.settings.retrieval.rerank_top_k]:
+                context_parts.append(
+                    f"[Section: {result.chunk.section}]\n{result.chunk.content}"
+                )
+            context = "\n\n---\n\n".join(context_parts)
+        
+        # Get chat history
+        history = self.db.get_chat_history(session.id, limit=10)
+        history_text = ""
+        if history:
+            history_entries = []
+            for msg in history[-6:]:
+                role_label = "User" if msg.role == "user" else "Assistant"
+                history_entries.append(f"{role_label}: {msg.content[:500]}")
+            history_text = "\n".join(history_entries)
+        
+        # Build prompt
+        prompt = f"""Paper Context:
+{context}
+
+{f"Previous Conversation:{chr(10)}{history_text}" if history_text else ""}
+
+User Question: {query}
+
+Provide a helpful, accurate response based on the paper content. 
+Cite specific sections when relevant."""
+        
+        # Stream response
+        full_response = ""
+        async for chunk in self.llm.stream(
+            prompt=prompt,
+            system_prompt=RAG_SYSTEM_PROMPT,
+        ):
+            full_response += chunk
+            yield chunk
+        
+        # Save messages after streaming completes
+        chunk_info = [
+            {
+                "id": r.chunk.id,
+                "section": r.chunk.section,
+                "score": round(r.score, 3),
+            }
+            for r in results[:5]
+        ] if results else []
+        
+        self.db.add_chat_message(session.id, "user", query)
+        self.db.add_chat_message(
+            session.id,
+            "assistant",
+            full_response,
+            retrieved_chunks=chunk_info,
+        )
+        
+        # Record interaction
+        self.db.record_interaction(paper_id, "chatted")
+        
+        logger.info(f"Streamed chat response for {paper_id}")

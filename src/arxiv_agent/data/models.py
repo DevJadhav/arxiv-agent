@@ -81,9 +81,13 @@ class ChatSession(SQLModel, table=True):
     __tablename__ = "chat_sessions"
     
     id: str = Field(primary_key=True)  # UUID
-    paper_id: str = Field(foreign_key="papers.id", index=True)
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    paper_id: str | None = Field(foreign_key="papers.id", index=True, default=None)
+    name: str | None = None  # Optional session name
+    paper_ids: list[str] | None = Field(sa_column=Column(JSON), default=None)  # Multiple papers
+    started_at: datetime | None = Field(default_factory=datetime.utcnow)
+    created_at: datetime | None = Field(default=None)  # Alias for started_at
     last_active: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime | None = Field(default=None)  # Alias for last_active
     message_count: int = 0
     context_summary: str | None = None
     
@@ -101,6 +105,7 @@ class ChatMessage(SQLModel, table=True):
     role: str  # 'user', 'assistant'
     content: str
     retrieved_chunks: list[dict] | None = Field(sa_column=Column(JSON), default=None)
+    sources: str | None = None  # JSON string of sources (alias for retrieved_chunks)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
     session: ChatSession | None = Relationship(back_populates="messages")
@@ -146,3 +151,52 @@ class UserPreference(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: dict = Field(sa_column=Column(JSON))
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ==================== FTS5 Full-Text Search ====================
+# Note: FTS5 virtual tables are created via raw SQL in DatabaseManager.init_fts()
+# The following constants define the schema for documentation purposes.
+
+FTS5_PAPERS_TABLE = "papers_fts"
+FTS5_PAPERS_COLUMNS = ["id", "title", "abstract", "authors_text"]
+
+# SQL to create FTS5 virtual table for papers (standalone table, not content-sync)
+# We use a standalone table because the papers table stores authors as JSON,
+# while we need it as text for full-text search.
+FTS5_CREATE_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(
+    id UNINDEXED,
+    title,
+    abstract,
+    authors_text,
+    tokenize='porter unicode61'
+);
+"""
+
+# Triggers to keep FTS index synchronized with papers table
+# For standalone FTS5 tables, we use regular INSERT/DELETE operations
+FTS5_TRIGGER_INSERT = """
+CREATE TRIGGER IF NOT EXISTS papers_fts_insert AFTER INSERT ON papers BEGIN
+    INSERT INTO papers_fts(id, title, abstract, authors_text)
+    VALUES (NEW.id, NEW.title, NEW.abstract, 
+            (SELECT group_concat(value, ' ') FROM json_each(NEW.authors)));
+END
+"""
+
+FTS5_TRIGGER_DELETE = """
+CREATE TRIGGER IF NOT EXISTS papers_fts_delete AFTER DELETE ON papers BEGIN
+    DELETE FROM papers_fts WHERE id = OLD.id;
+END
+"""
+
+FTS5_TRIGGER_UPDATE = """
+CREATE TRIGGER IF NOT EXISTS papers_fts_update AFTER UPDATE ON papers BEGIN
+    DELETE FROM papers_fts WHERE id = OLD.id;
+    INSERT INTO papers_fts(id, title, abstract, authors_text)
+    VALUES (NEW.id, NEW.title, NEW.abstract,
+            (SELECT group_concat(value, ' ') FROM json_each(NEW.authors)));
+END
+"""
+
+# List of all trigger SQL statements (for backward compat)
+FTS5_TRIGGERS_SQL = [FTS5_TRIGGER_INSERT, FTS5_TRIGGER_DELETE, FTS5_TRIGGER_UPDATE]

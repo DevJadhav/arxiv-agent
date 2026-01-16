@@ -7,7 +7,7 @@ from loguru import logger
 from arxiv_agent.agents.state import AgentState
 from arxiv_agent.config.settings import get_settings
 from arxiv_agent.core.api_client import get_api_client
-from arxiv_agent.core.llm_service import get_llm_service
+from arxiv_agent.core.llm_service import get_llm_service, LLMService
 from arxiv_agent.core.pdf_processor import get_pdf_processor
 from arxiv_agent.core.vector_store import Chunk, get_vector_store
 from arxiv_agent.data.models import Analysis
@@ -355,3 +355,356 @@ Include specific file names, class/function names, and dependencies."""
                 chunk_index += 1
         
         return chunks
+    
+    def compare_papers(
+        self, 
+        *papers,
+        output_format: str = "json"
+    ) -> dict | str:
+        """Compare multiple papers and identify similarities/differences.
+        
+        Args:
+            *papers: Two or more Paper objects to compare
+            output_format: Output format - "json", "markdown", or "html"
+            
+        Returns:
+            Comparison result as dict (json) or formatted string (markdown/html)
+            
+        Raises:
+            ValueError: If fewer than 2 papers provided
+        """
+        import asyncio
+        
+        if len(papers) < 2:
+            raise ValueError("Comparison requires at least two papers")
+        
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        
+        if loop and loop.is_running():
+            # If we're already in an async context, use create_task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(
+                    asyncio.run,
+                    self._compare_papers_async(papers, output_format)
+                ).result()
+        else:
+            return asyncio.run(
+                self._compare_papers_async(papers, output_format)
+            )
+    
+    async def _compare_papers_async(
+        self,
+        papers: tuple,
+        output_format: str
+    ) -> dict | str:
+        """Async implementation of paper comparison."""
+        
+        comparison_schema = {
+            "type": "object",
+            "properties": {
+                "similarities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "aspect": {"type": "string"},
+                            "description": {"type": "string"},
+                            "significance": {"type": "string", "enum": ["high", "medium", "low"]}
+                        },
+                        "required": ["aspect", "description"]
+                    }
+                },
+                "differences": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "aspect": {"type": "string"},
+                            "paper1_approach": {"type": "string"},
+                            "paper2_approach": {"type": "string"},
+                            "significance": {"type": "string", "enum": ["high", "medium", "low"]}
+                        },
+                        "required": ["aspect", "paper1_approach", "paper2_approach"]
+                    }
+                },
+                "methodology_comparison": {
+                    "type": "object",
+                    "properties": {
+                        "paper1": {"type": "string"},
+                        "paper2": {"type": "string"}
+                    }
+                },
+                "contribution_comparison": {
+                    "type": "object",
+                    "properties": {
+                        "paper1": {"type": "string"},
+                        "paper2": {"type": "string"}
+                    }
+                },
+                "recommendation": {"type": "string"}
+            },
+            "required": ["similarities", "differences", "recommendation"]
+        }
+        
+        # Build prompt with paper information
+        papers_info = []
+        for i, paper in enumerate(papers, 1):
+            papers_info.append(f"""
+Paper {i}: {paper.title}
+ID: {paper.arxiv_id if hasattr(paper, 'arxiv_id') else paper.id}
+Authors: {', '.join(paper.authors[:5])}{'...' if len(paper.authors) > 5 else ''}
+Categories: {', '.join(paper.categories) if paper.categories else 'N/A'}
+Abstract: {paper.abstract}
+""")
+        
+        prompt = f"""Compare the following research papers and analyze their similarities and differences.
+
+{chr(10).join(papers_info)}
+
+Provide a comprehensive comparison including:
+1. Key similarities between the papers
+2. Major differences in approach, methodology, or focus
+3. Methodology comparison for each paper
+4. Contribution comparison
+5. Recommendation for which paper to read first and why"""
+
+        try:
+            result = await self.llm.generate_json(
+                prompt=prompt,
+                schema=comparison_schema,
+                system_prompt="You are an expert research paper analyst specializing in comparing academic papers.",
+            )
+        except Exception:
+            # Fallback to regular generation if structured fails
+            response = await self.llm.agenerate(prompt=prompt)
+            result = {
+                "similarities": [],
+                "differences": [],
+                "recommendation": response.content,
+                "raw_comparison": response.content
+            }
+        
+        # Format output
+        if output_format == "json":
+            return result
+        elif output_format == "markdown":
+            return self._format_comparison_markdown(result, papers)
+        elif output_format == "html":
+            return self._format_comparison_html(result, papers)
+        else:
+            return result
+    
+    def _format_comparison_markdown(self, comparison: dict, papers: tuple) -> str:
+        """Format comparison result as markdown."""
+        lines = [
+            "# Paper Comparison",
+            "",
+            "## Papers Compared",
+            "",
+        ]
+        
+        for i, paper in enumerate(papers, 1):
+            lines.append(f"{i}. **{paper.title}** ({paper.arxiv_id if hasattr(paper, 'arxiv_id') else paper.id})")
+        
+        lines.extend(["", "## Similarities", ""])
+        for sim in comparison.get("similarities", []):
+            sig = f" [{sim.get('significance', 'medium')}]" if 'significance' in sim else ""
+            lines.append(f"- **{sim.get('aspect', 'Unknown')}**{sig}: {sim.get('description', '')}")
+        
+        lines.extend(["", "## Differences", ""])
+        for diff in comparison.get("differences", []):
+            lines.extend([
+                f"### {diff.get('aspect', 'Unknown')}",
+                f"- **Paper 1**: {diff.get('paper1_approach', 'N/A')}",
+                f"- **Paper 2**: {diff.get('paper2_approach', 'N/A')}",
+                ""
+            ])
+        
+        if "methodology_comparison" in comparison:
+            lines.extend(["## Methodology Comparison", ""])
+            mc = comparison["methodology_comparison"]
+            lines.extend([
+                f"**Paper 1**: {mc.get('paper1', 'N/A')}",
+                "",
+                f"**Paper 2**: {mc.get('paper2', 'N/A')}",
+                ""
+            ])
+        
+        lines.extend([
+            "## Recommendation",
+            "",
+            comparison.get("recommendation", "No recommendation available."),
+        ])
+        
+        return "\n".join(lines)
+    
+    def _format_comparison_html(self, comparison: dict, papers: tuple) -> str:
+        """Format comparison result as HTML."""
+        html = ["<html><body>", "<h1>Paper Comparison</h1>"]
+        
+        html.append("<h2>Papers Compared</h2><ol>")
+        for paper in papers:
+            html.append(f"<li><strong>{paper.title}</strong></li>")
+        html.append("</ol>")
+        
+        html.append("<h2>Similarities</h2><ul>")
+        for sim in comparison.get("similarities", []):
+            html.append(f"<li><strong>{sim.get('aspect', '')}</strong>: {sim.get('description', '')}</li>")
+        html.append("</ul>")
+        
+        html.append("<h2>Differences</h2>")
+        for diff in comparison.get("differences", []):
+            html.append(f"<h3>{diff.get('aspect', '')}</h3>")
+            html.append(f"<p><strong>Paper 1:</strong> {diff.get('paper1_approach', '')}</p>")
+            html.append(f"<p><strong>Paper 2:</strong> {diff.get('paper2_approach', '')}</p>")
+        
+        html.append(f"<h2>Recommendation</h2><p>{comparison.get('recommendation', '')}</p>")
+        html.append("</body></html>")
+        
+        return "\n".join(html)
+
+
+# Paper-to-code scaffolding functions
+
+def create_project_structure(project_dir: Path, code_plan: dict) -> None:
+    """Create project directory structure from code plan.
+    
+    Args:
+        project_dir: Root directory for the project
+        code_plan: Dictionary containing:
+            - architecture: Description of the architecture
+            - components: List of component definitions with file paths
+            - python_dependencies: List of required packages
+            - implementation_order: Order to implement files
+    """
+    project_dir = Path(project_dir)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create directory structure from components
+    directories = set()
+    for component in code_plan.get("components", []):
+        file_path = component.get("file", "")
+        if "/" in file_path:
+            dir_path = project_dir / Path(file_path).parent
+            directories.add(dir_path)
+    
+    # Create all directories
+    for dir_path in directories:
+        dir_path.mkdir(parents=True, exist_ok=True)
+        # Create __init__.py files
+        init_file = dir_path / "__init__.py"
+        if not init_file.exists():
+            init_file.write_text('"""Auto-generated module."""\n')
+    
+    # Create src directory if not in components
+    src_dir = project_dir / "src"
+    src_dir.mkdir(exist_ok=True)
+    (src_dir / "__init__.py").write_text('"""Source package."""\n')
+    
+    # Create tests directory
+    tests_dir = project_dir / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    (tests_dir / "__init__.py").write_text('"""Test package."""\n')
+    
+    # Create pyproject.toml (write directly without toml library)
+    deps = code_plan.get("python_dependencies", [])
+    deps_str = ",\n    ".join(f'"{d}"' for d in deps)
+    
+    pyproject_content = f'''[project]
+name = "{project_dir.name}"
+version = "0.1.0"
+description = "{code_plan.get("architecture", "Generated project")}"
+requires-python = ">=3.10"
+dependencies = [
+    {deps_str}
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+'''
+    
+    pyproject_path = project_dir / "pyproject.toml"
+    pyproject_path.write_text(pyproject_content)
+    
+    # Create README.md
+    readme_content = f"""# {project_dir.name}
+
+{code_plan.get("architecture", "Generated from paper analysis.")}
+
+## Components
+
+"""
+    for component in code_plan.get("components", []):
+        readme_content += f"- **{component.get('name', 'Unknown')}**: {component.get('description', '')}\n"
+    
+    readme_content += """
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+See individual component files for usage examples.
+"""
+    
+    readme_path = project_dir / "README.md"
+    readme_path.write_text(readme_content)
+    
+    logger.info(f"Created project structure at {project_dir}")
+
+
+def validate_code(code: str) -> dict:
+    """Validate Python code for syntax and basic correctness.
+    
+    Args:
+        code: Python source code string
+        
+    Returns:
+        Dictionary with validation results:
+            - syntax_valid: bool - Whether code parses correctly
+            - errors: list - List of error messages if any
+            - imports: list - List of detected imports
+            - classes: list - List of class names defined
+            - functions: list - List of function names defined
+    """
+    import ast
+    
+    result = {
+        "syntax_valid": False,
+        "errors": [],
+        "imports": [],
+        "classes": [],
+        "functions": [],
+    }
+    
+    try:
+        tree = ast.parse(code)
+        result["syntax_valid"] = True
+        
+        # Extract imports
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    result["imports"].append(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    result["imports"].append(f"{module}.{alias.name}")
+            elif isinstance(node, ast.ClassDef):
+                result["classes"].append(node.name)
+            elif isinstance(node, ast.FunctionDef):
+                result["functions"].append(node.name)
+                
+    except SyntaxError as e:
+        result["errors"].append(f"Syntax error at line {e.lineno}: {e.msg}")
+    except Exception as e:
+        result["errors"].append(str(e))
+    
+    return result

@@ -18,6 +18,7 @@ from tenacity import (
 
 from arxiv_agent.config.settings import get_settings
 from arxiv_agent.data.models import Paper
+from arxiv_agent.core.circuit_breaker import CircuitBreaker, CircuitBreakerRegistry
 
 
 class RateLimiter:
@@ -76,6 +77,11 @@ class APIClientManager:
         # Rate limiters
         self.arxiv_limiter = RateLimiter(rate=1, per=3)  # 1 request per 3 seconds
         self.semantic_scholar_limiter = RateLimiter(rate=1, per=1)  # 1 request per second
+        
+        # Circuit breakers
+        self._circuit_breaker_registry = CircuitBreakerRegistry()
+        self.circuit_breaker = self._circuit_breaker_registry.get("arxiv")
+        self._s2_circuit_breaker = self._circuit_breaker_registry.get("semantic_scholar")
         
         # Disk cache for API responses
         cache_dir = settings.cache_dir / "api_responses"

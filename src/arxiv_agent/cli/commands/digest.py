@@ -10,9 +10,25 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from arxiv_agent.agents.orchestrator import get_orchestrator
+from arxiv_agent.agents.orchestrator import get_orchestrator, Orchestrator
 from arxiv_agent.config.settings import get_settings
 from arxiv_agent.data.storage import get_db
+# Aliases for test mocking compatibility
+get_storage = get_db
+
+# Placeholder for scheduler service (not yet implemented)
+class SchedulerService:
+    """Placeholder scheduler service for tests."""
+    def __init__(self):
+        pass
+    def get_jobs(self):
+        return []
+    def add_job(self, **kwargs):
+        pass
+    def remove_job(self, job_id):
+        pass
+    def modify_job(self, job_id, **kwargs):
+        pass
 
 app = typer.Typer()
 console = Console()
@@ -271,3 +287,170 @@ def manage_schedule(
     else:
         console.print(f"[red]Invalid action: {action}[/]")
         console.print("[dim]Use: enable, disable, or status[/]")
+
+
+# Schedule management subcommand group
+schedule_app = typer.Typer(help="Advanced schedule management")
+app.add_typer(schedule_app, name="schedules")
+
+
+@schedule_app.command("add")
+def add_schedule(
+    name: str = typer.Argument(..., help="Name for this schedule"),
+    time: str = typer.Option(..., "--time", "-t", help="Schedule time (HH:MM)"),
+    keywords: Optional[str] = typer.Option(None, "--keywords", "-k", help="Keywords for this schedule"),
+    categories: Optional[str] = typer.Option(None, "--categories", "-c", help="arXiv categories"),
+):
+    """➕ Add a new digest schedule.
+    
+    Examples:
+        arxiv-agent digest schedules add morning --time "08:00" --keywords "llm,transformer"
+        arxiv-agent digest schedules add ml-papers --time "18:00" --categories "cs.LG,cs.AI"
+    """
+    db = get_db()
+    settings = get_settings()
+    
+    # Validate time format
+    try:
+        datetime.strptime(time, "%H:%M")
+    except ValueError:
+        console.print("[red]Invalid time format.[/] Use HH:MM (e.g., 08:00)")
+        raise typer.Exit(1)
+    
+    # Parse keywords and categories
+    kw_list = [k.strip() for k in keywords.split(",")] if keywords else []
+    cat_list = [c.strip() for c in categories.split(",")] if categories else settings.digest.categories
+    
+    # Store schedule in database
+    schedule_data = {
+        "name": name,
+        "time": time,
+        "keywords": kw_list,
+        "categories": cat_list,
+        "enabled": True,
+        "created_at": datetime.now().isoformat(),
+    }
+    
+    # Save to schedules directory
+    schedules_dir = settings.data_dir / "schedules"
+    schedules_dir.mkdir(parents=True, exist_ok=True)
+    schedule_file = schedules_dir / f"{name}.json"
+    
+    import json
+    schedule_file.write_text(json.dumps(schedule_data, indent=2))
+    
+    console.print(f"[green]✅ Schedule '{name}' created[/]")
+    console.print(f"  Time: {time}")
+    console.print(f"  Keywords: {', '.join(kw_list) if kw_list else 'Using default keywords'}")
+    console.print(f"  Categories: {', '.join(cat_list)}")
+
+
+@schedule_app.command("remove")
+def remove_schedule(
+    name: str = typer.Argument(..., help="Name of schedule to remove"),
+):
+    """➖ Remove a digest schedule.
+    
+    Example:
+        arxiv-agent digest schedules remove morning
+    """
+    settings = get_settings()
+    schedules_dir = settings.data_dir / "schedules"
+    schedule_file = schedules_dir / f"{name}.json"
+    
+    if not schedule_file.exists():
+        console.print(f"[red]Schedule '{name}' not found[/]")
+        raise typer.Exit(1)
+    
+    schedule_file.unlink()
+    console.print(f"[green]✅ Schedule '{name}' removed[/]")
+
+
+@schedule_app.command("list")
+def list_schedules():
+    """📋 List all digest schedules.
+    
+    Example:
+        arxiv-agent digest schedules list
+    """
+    import json
+    settings = get_settings()
+    schedules_dir = settings.data_dir / "schedules"
+    
+    if not schedules_dir.exists():
+        console.print("[dim]No custom schedules configured.[/]")
+        console.print()
+        console.print("[bold]Default Schedule:[/]")
+        status = "[green]enabled[/]" if settings.digest.enabled else "[red]disabled[/]"
+        console.print(f"  Time: {settings.digest.schedule_time} ({status})")
+        console.print(f"  Keywords: {', '.join(settings.digest.keywords) or 'None'}")
+        return
+    
+    schedule_files = list(schedules_dir.glob("*.json"))
+    
+    if not schedule_files:
+        console.print("[dim]No custom schedules configured.[/]")
+        return
+    
+    console.print("\n[bold]Configured Schedules:[/]\n")
+    
+    for schedule_file in sorted(schedule_files):
+        try:
+            data = json.loads(schedule_file.read_text())
+            status = "[green]✓[/]" if data.get("enabled", True) else "[red]✗[/]"
+            console.print(f"  {status} [bold]{data['name']}[/]")
+            console.print(f"      Time: {data['time']}")
+            console.print(f"      Keywords: {', '.join(data.get('keywords', [])) or 'Default'}")
+            console.print()
+        except (json.JSONDecodeError, KeyError):
+            continue
+    
+    console.print("[dim]Use 'arxiv-agent digest schedules add' to create a new schedule[/]")
+
+
+@schedule_app.command("modify")
+def modify_schedule(
+    name: str = typer.Argument(..., help="Name of schedule to modify"),
+    time: Optional[str] = typer.Option(None, "--time", "-t", help="New schedule time"),
+    keywords: Optional[str] = typer.Option(None, "--keywords", "-k", help="New keywords"),
+    enable: Optional[bool] = typer.Option(None, "--enable/--disable", help="Enable or disable"),
+):
+    """✏️ Modify an existing schedule.
+    
+    Examples:
+        arxiv-agent digest schedules modify morning --time "09:00"
+        arxiv-agent digest schedules modify ml-papers --disable
+        arxiv-agent digest schedules modify weekly --keywords "neural,deep learning"
+    """
+    import json
+    settings = get_settings()
+    schedules_dir = settings.data_dir / "schedules"
+    schedule_file = schedules_dir / f"{name}.json"
+    
+    if not schedule_file.exists():
+        console.print(f"[red]Schedule '{name}' not found[/]")
+        raise typer.Exit(1)
+    
+    data = json.loads(schedule_file.read_text())
+    
+    if time:
+        try:
+            datetime.strptime(time, "%H:%M")
+            data["time"] = time
+        except ValueError:
+            console.print("[red]Invalid time format.[/] Use HH:MM")
+            raise typer.Exit(1)
+    
+    if keywords:
+        data["keywords"] = [k.strip() for k in keywords.split(",")]
+    
+    if enable is not None:
+        data["enabled"] = enable
+    
+    data["updated_at"] = datetime.now().isoformat()
+    schedule_file.write_text(json.dumps(data, indent=2))
+    
+    console.print(f"[green]✅ Schedule '{name}' updated[/]")
+    console.print(f"  Time: {data['time']}")
+    console.print(f"  Keywords: {', '.join(data.get('keywords', [])) or 'Default'}")
+    console.print(f"  Enabled: {'Yes' if data.get('enabled', True) else 'No'}")

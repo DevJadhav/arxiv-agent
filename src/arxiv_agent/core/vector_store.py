@@ -83,6 +83,71 @@ class EmbeddingService:
         return self.embed([query])[0]
 
 
+class CrossEncoderReranker:
+    """Cross-encoder model for reranking search results."""
+    
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L6-v2"):
+        """Initialize cross-encoder reranker.
+        
+        Args:
+            model_name: HuggingFace model name for cross-encoder
+        """
+        self.model_name = model_name
+        self._model = None
+    
+    @property
+    def model(self):
+        """Lazy load the cross-encoder model."""
+        if self._model is None:
+            from sentence_transformers import CrossEncoder
+            
+            logger.info(f"Loading cross-encoder model: {self.model_name}")
+            self._model = CrossEncoder(self.model_name, max_length=512)
+        return self._model
+    
+    def rerank(
+        self,
+        query: str,
+        results: list[RetrievalResult],
+        top_k: int | None = None,
+    ) -> list[RetrievalResult]:
+        """Rerank search results using cross-encoder.
+        
+        Args:
+            query: Original search query
+            results: List of RetrievalResult to rerank
+            top_k: Number of results to return (None = all)
+        
+        Returns:
+            Reranked list of RetrievalResult
+        """
+        if not results:
+            return []
+        
+        # Create query-document pairs for cross-encoder
+        pairs = [(query, result.chunk.content) for result in results]
+        
+        # Get cross-encoder scores
+        scores = self.model.predict(pairs)
+        
+        # Create reranked results with new scores
+        reranked = []
+        for i, result in enumerate(results):
+            reranked.append(RetrievalResult(
+                chunk=result.chunk,
+                score=float(scores[i]),
+                source=f"{result.source}+rerank",
+            ))
+        
+        # Sort by new scores (descending)
+        reranked.sort(key=lambda x: x.score, reverse=True)
+        
+        if top_k:
+            reranked = reranked[:top_k]
+        
+        return reranked
+
+
 class VectorStore:
     """ChromaDB-based vector store with hybrid search."""
     
@@ -122,6 +187,9 @@ class VectorStore:
         self._bm25_docs: list[str] = []
         self._bm25_ids: list[str] = []
         self._bm25_metadata: list[dict] = []
+        
+        # Cross-encoder for reranking (lazy loaded)
+        self._reranker: CrossEncoderReranker | None = None
         
         logger.debug(f"Vector store initialized at {persist_dir}")
     
@@ -378,6 +446,67 @@ class VectorStore:
             )
             for chunk_id in sorted_ids[:k]
         ]
+    
+    @property
+    def reranker(self) -> CrossEncoderReranker:
+        """Get or create cross-encoder reranker."""
+        if self._reranker is None:
+            self._reranker = CrossEncoderReranker()
+        return self._reranker
+    
+    def rerank_results(
+        self,
+        query: str,
+        results: list[RetrievalResult],
+        top_k: int | None = None,
+    ) -> list[RetrievalResult]:
+        """Rerank search results using cross-encoder.
+        
+        Args:
+            query: Original search query
+            results: List of RetrievalResult to rerank
+            top_k: Number of results to return (None = all)
+        
+        Returns:
+            Reranked list of RetrievalResult
+        """
+        return self.reranker.rerank(query, results, top_k)
+    
+    def hybrid_search_with_rerank(
+        self,
+        query: str,
+        paper_id: str | None = None,
+        k: int = 10,
+        rerank_top_k: int = 50,
+        dense_weight: float | None = None,
+    ) -> list[RetrievalResult]:
+        """Hybrid search with cross-encoder reranking for best quality.
+        
+        Two-stage retrieval:
+        1. Retrieve rerank_top_k candidates using hybrid search
+        2. Rerank candidates using cross-encoder and return top k
+        
+        Args:
+            query: Search query
+            paper_id: Optional paper ID to filter results
+            k: Number of final results to return
+            rerank_top_k: Number of candidates to rerank
+            dense_weight: Weight for dense results in initial retrieval
+        
+        Returns:
+            List of RetrievalResult sorted by cross-encoder score
+        """
+        # Stage 1: Get candidates via hybrid search
+        candidates = self.hybrid_search(query, paper_id, rerank_top_k, dense_weight)
+        
+        if not candidates:
+            return []
+        
+        # Stage 2: Rerank using cross-encoder
+        reranked = self.rerank_results(query, candidates, top_k=k)
+        
+        logger.debug(f"Reranked {len(candidates)} candidates to top {k}")
+        return reranked
     
     def search_similar_papers(
         self,

@@ -24,10 +24,10 @@ class TestSettings:
         """Test that default settings are created correctly."""
         settings = Settings()
         
-        assert settings.llm.anthropic_model == "claude-sonnet-4-5-20250514"
+        assert settings.llm.anthropic_model == "claude-sonnet-4-5-20250929"
         assert settings.llm.default_provider == "anthropic"
-        assert settings.embedding.model == "allenai/specter2"
-        assert settings.embedding.dimension == 768
+        assert settings.embedding.model == "sentence-transformers/all-MiniLM-L6-v2"
+        assert settings.embedding.dimension == 384
         assert settings.digest.max_papers == 10
         assert settings.retrieval.dense_weight == 0.7
     
@@ -86,10 +86,10 @@ class TestLLMSettings:
         """Test default LLM models for providers."""
         settings = LLMSettings()
         
-        assert settings.anthropic_model == "claude-sonnet-4-5-20250514"
-        assert settings.anthropic_model_advanced == "claude-opus-4-5-20250101"
+        assert settings.anthropic_model == "claude-sonnet-4-5-20250929"
+        assert settings.anthropic_model_advanced == "claude-opus-4-5-20251101"
         assert settings.openai_model == "gpt-4o"
-        assert settings.gemini_model == "gemini-2.5-pro"
+        assert settings.gemini_model == "gemini-1.5-flash"
         assert settings.max_tokens == 4096
         assert settings.temperature == 0.7
     
@@ -111,9 +111,9 @@ class TestLLMSettings:
         """Test getting model for provider."""
         settings = LLMSettings()
         
-        assert settings.get_provider_model("anthropic") == "claude-sonnet-4-5-20250514"
+        assert settings.get_provider_model("anthropic") == "claude-sonnet-4-5-20250929"
         assert settings.get_provider_model("openai") == "gpt-4o"
-        assert settings.get_provider_model("gemini") == "gemini-2.5-pro"
+        assert settings.get_provider_model("gemini") == "gemini-1.5-flash"
 
 
 class TestDigestSettings:

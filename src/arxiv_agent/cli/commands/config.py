@@ -18,6 +18,128 @@ console = Console()
 provider_app = typer.Typer(help="🔌 Manage LLM providers")
 app.add_typer(provider_app, name="provider")
 
+# Sub-app for theme management
+theme_app = typer.Typer(help="🎨 Manage UI themes")
+app.add_typer(theme_app, name="theme")
+
+
+@theme_app.command("list")
+def list_themes():
+    """📋 List available themes.
+    
+    Example:
+        arxiv-agent config theme list
+    """
+    from arxiv_agent.config.themes import get_available_themes, get_current_theme, get_theme
+    
+    current = get_current_theme()
+    themes = get_available_themes()
+    
+    console.print("\n[bold blue]🎨 Available Themes[/]\n")
+    
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Theme", style="cyan")
+    table.add_column("Description")
+    table.add_column("Active", justify="center")
+    
+    for name in themes:
+        theme = get_theme(name)
+        is_current = "⭐" if name == current.name else ""
+        table.add_row(theme.name, theme.description, is_current)
+    
+    console.print(table)
+    console.print(f"\n[dim]Current theme: [cyan]{current.name}[/][/]")
+
+
+@theme_app.command("set")
+def set_theme(
+    name: str = typer.Argument(..., help="Theme name to activate"),
+):
+    """⭐ Set the active theme.
+    
+    Example:
+        arxiv-agent config theme set dark
+    """
+    from arxiv_agent.config.themes import get_theme_manager, get_available_themes
+    
+    manager = get_theme_manager()
+    available = get_available_themes()
+    
+    if name not in available:
+        console.print(f"[red]Theme not found: {name}[/]")
+        console.print(f"[dim]Available themes: {', '.join(available)}[/]")
+        raise typer.Exit(1)
+    
+    manager.set_theme(name)
+    console.print(f"[green]✓[/] Theme set to: [cyan]{name}[/]")
+
+
+@theme_app.command("preview")
+def preview_theme(
+    name: str = typer.Argument(..., help="Theme name to preview"),
+):
+    """👁️ Preview a theme without applying.
+    
+    Example:
+        arxiv-agent config theme preview dracula
+    """
+    from arxiv_agent.config.themes import preview_theme as do_preview, get_available_themes
+    
+    available = get_available_themes()
+    
+    if name not in available:
+        console.print(f"[red]Theme not found: {name}[/]")
+        console.print(f"[dim]Available themes: {', '.join(available)}[/]")
+        raise typer.Exit(1)
+    
+    preview = do_preview(name)
+    console.print(Panel(preview, title=f"Theme Preview: {name}", border_style="blue"))
+
+
+@theme_app.command("reset")
+def reset_theme():
+    """🔄 Reset to default theme.
+    
+    Example:
+        arxiv-agent config theme reset
+    """
+    from arxiv_agent.config.themes import get_theme_manager
+    
+    manager = get_theme_manager()
+    manager.set_theme("default")
+    console.print("[green]✓[/] Theme reset to default")
+
+
+@app.command("path")
+def show_paths():
+    """📁 Show configuration file paths.
+    
+    Example:
+        arxiv-agent config path
+    """
+    settings = get_settings()
+    
+    console.print("\n[bold blue]📁 Configuration Paths[/]\n")
+    
+    console.print(f"[bold]Data Directory:[/]")
+    console.print(f"  {settings.data_dir}")
+    
+    console.print(f"\n[bold]Database:[/]")
+    console.print(f"  {settings.db_path}")
+    
+    console.print(f"\n[bold]Vector Store:[/]")
+    console.print(f"  {settings.vector_db_path}")
+    
+    console.print(f"\n[bold]Cache Directory:[/]")
+    console.print(f"  {settings.data_dir / 'cache'}")
+    
+    config_file = settings.data_dir / "config.json"
+    console.print(f"\n[bold]Config File:[/]")
+    if config_file.exists():
+        console.print(f"  {config_file} [green](exists)[/]")
+    else:
+        console.print(f"  {config_file} [dim](not created)[/]")
+
 
 @provider_app.command("list")
 def list_providers():
@@ -431,3 +553,74 @@ def reset_config(
     reset_settings()
     
     console.print("[green]✓[/] Configuration reset to defaults")
+
+
+@app.command("set")
+def set_config_value(
+    key: str = typer.Argument(..., help="Config key in dot notation (e.g., llm.temperature)"),
+    value: str = typer.Argument(..., help="Value to set"),
+):
+    """⚙️ Set a configuration value.
+    
+    Examples:
+        arxiv-agent config set llm.temperature 0.5
+        arxiv-agent config set digest.max_papers 10
+        arxiv-agent config set retrieval.top_k 5
+    """
+    settings = get_settings()
+    
+    # Parse key path
+    parts = key.split(".")
+    if len(parts) < 2:
+        console.print("[red]Invalid key format.[/] Use dot notation like 'llm.temperature'")
+        raise typer.Exit(1)
+    
+    # Map of valid keys and their types
+    valid_keys = {
+        "llm.temperature": (float, "llm", "temperature"),
+        "llm.max_tokens": (int, "llm", "max_tokens"),
+        "llm.default_provider": (str, "llm", "default_provider"),
+        "digest.max_papers": (int, "digest", "max_papers"),
+        "digest.schedule_time": (str, "digest", "schedule_time"),
+        "digest.enabled": (bool, "digest", "enabled"),
+        "retrieval.top_k": (int, "retrieval", "top_k"),
+        "retrieval.rerank_enabled": (bool, "retrieval", "rerank_enabled"),
+        "chunking.chunk_size": (int, "chunking", "chunk_size"),
+        "chunking.chunk_overlap": (int, "chunking", "chunk_overlap"),
+    }
+    
+    if key not in valid_keys:
+        console.print(f"[red]Unknown configuration key: {key}[/]")
+        console.print("\n[bold]Valid keys:[/]")
+        for k in sorted(valid_keys.keys()):
+            console.print(f"  • {k}")
+        raise typer.Exit(1)
+    
+    value_type, section, attr = valid_keys[key]
+    
+    # Parse and validate value
+    try:
+        if value_type == bool:
+            parsed_value = value.lower() in ("true", "1", "yes", "on")
+        elif value_type == int:
+            parsed_value = int(value)
+        elif value_type == float:
+            parsed_value = float(value)
+        else:
+            parsed_value = value
+    except ValueError:
+        console.print(f"[red]Invalid value type.[/] Expected {value_type.__name__}")
+        raise typer.Exit(1)
+    
+    # Get the section and set the attribute
+    section_obj = getattr(settings, section)
+    old_value = getattr(section_obj, attr)
+    setattr(section_obj, attr, parsed_value)
+    
+    console.print(f"[green]✓[/] Set {key}")
+    console.print(f"  Old: {old_value}")
+    console.print(f"  New: {parsed_value}")
+    console.print(f"\n[dim]Note: This change is for the current session only.[/]")
+    console.print(f"[dim]To persist, set environment variable:[/]")
+    env_key = f"ARXIV_AGENT_{section.upper()}__{attr.upper()}"
+    console.print(f"  export {env_key}={parsed_value}")

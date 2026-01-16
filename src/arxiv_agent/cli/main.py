@@ -9,7 +9,7 @@ from loguru import logger
 from rich.console import Console
 
 from arxiv_agent import __version__
-from arxiv_agent.cli.commands import analyze, chat, config, digest, library, search, trends
+from arxiv_agent.cli.commands import analyze, chat, config, daemon, digest, library, search, trends
 from arxiv_agent.config.settings import get_settings
 
 # Main Typer app
@@ -30,12 +30,14 @@ app.command("chat")(chat.chat)
 app.command("history")(chat.show_full_history)
 app.command("export")(chat.export_chat)
 app.command("analyze")(analyze.analyze)
+app.command("paper2code")(analyze.paper2code)
 app.command("summary")(analyze.show_summary)
 
 app.add_typer(digest.app, name="digest", help="📰 Daily digest management")
 app.add_typer(library.app, name="library", help="📚 Personal library management")
 app.add_typer(trends.app, name="trends", help="📈 Trending topics discovery")
 app.add_typer(config.app, name="config", help="⚙️ Settings management")
+app.add_typer(daemon.app, name="daemon", help="🔄 Background scheduler management")
 
 
 @app.callback()
