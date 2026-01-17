@@ -119,6 +119,7 @@ class LLMService:
         self._anthropic_client = None
         self._openai_client = None
         self._gemini_client = None
+        self._ollama_client = None
         
         self.max_tokens = self.settings.llm.max_tokens
         self.temperature = self.settings.llm.temperature
@@ -187,6 +188,19 @@ class LLMService:
             genai.configure(api_key=self._get_api_key("gemini"))
             self._gemini_client = genai
         return self._gemini_client
+
+    def _get_ollama(self):
+        """Get or create Ollama client."""
+        if self._ollama_client is None:
+            try:
+                import ollama
+                self._ollama_client = ollama.Client(host=self.settings.llm.ollama_base_url)
+            except ImportError:
+                raise ImportError(
+                    "Ollama package not installed. Install with: pip install ollama "
+                    "or install arxiv-agent with local-llm extras: pip install arxiv-agent[local-llm]"
+                )
+        return self._ollama_client
     
     def generate(
         self,
@@ -214,6 +228,8 @@ class LLMService:
             return self._generate_openai(prompt, system_prompt, use_history, temperature, max_tokens)
         elif self.provider == "gemini":
             return self._generate_gemini(prompt, system_prompt, use_history, temperature, max_tokens)
+        elif self.provider == "ollama":
+            return self._generate_ollama(prompt, system_prompt, use_history, temperature, max_tokens)
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
     
@@ -380,6 +396,64 @@ class LLMService:
             provider="gemini",
             finish_reason="stop",
         )
+
+    def _generate_ollama(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        use_history: bool,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Generate using Ollama."""
+        client = self._get_ollama()
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if use_history:
+            messages.extend(self.history)
+        messages.append({"role": "user", "content": prompt})
+
+        # Guardrails
+        self.check_context_window(prompt, system_prompt)
+
+        options = {}
+        if temperature is not None:
+            options["temperature"] = temperature
+        else:
+            options["temperature"] = self.temperature
+        if max_tokens:
+            options["num_predict"] = max_tokens
+        else:
+            options["num_predict"] = self.max_tokens
+
+        response = client.chat(
+            model=self.model,
+            messages=messages,
+            options=options,
+        )
+
+        content = response["message"]["content"]
+
+        # Update history
+        if use_history:
+            self.history.append({"role": "user", "content": prompt})
+            self.history.append({"role": "assistant", "content": content})
+
+        # Track usage (Ollama provides token counts)
+        input_tokens = response.get("prompt_eval_count", 0)
+        output_tokens = response.get("eval_count", 0)
+        self.tracker.track("ollama", self.model, input_tokens, output_tokens)
+
+        return LLMResponse(
+            content=content,
+            model=self.model,
+            provider="ollama",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            finish_reason="stop",
+        )
     
     async def agenerate(
         self,
@@ -407,6 +481,8 @@ class LLMService:
             return await self._agenerate_openai(prompt, system_prompt, use_history, temperature, max_tokens)
         elif self.provider == "gemini":
             return await self._agenerate_gemini(prompt, system_prompt, use_history, temperature, max_tokens)
+        elif self.provider == "ollama":
+            return await self._agenerate_ollama(prompt, system_prompt, use_history, temperature, max_tokens)
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
     
@@ -624,6 +700,71 @@ class LLMService:
             None,
             lambda: self._generate_gemini(prompt, system_prompt, use_history, temperature, max_tokens)
         )
+
+    async def _agenerate_ollama(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        use_history: bool,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Generate using Ollama async."""
+        try:
+            import ollama
+            client = ollama.AsyncClient(host=self.settings.llm.ollama_base_url)
+        except ImportError as e:
+            raise ImportError(
+                "Ollama package not installed. Install with: pip install ollama "
+                "or install arxiv-agent with local-llm extras: pip install arxiv-agent[local-llm]"
+            ) from e
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if use_history:
+            messages.extend(self.history)
+        messages.append({"role": "user", "content": prompt})
+
+        # Guardrails
+        self.check_context_window(prompt, system_prompt)
+
+        options = {}
+        if temperature is not None:
+            options["temperature"] = temperature
+        else:
+            options["temperature"] = self.temperature
+        if max_tokens:
+            options["num_predict"] = max_tokens
+        else:
+            options["num_predict"] = self.max_tokens
+
+        response = await client.chat(
+            model=self.model,
+            messages=messages,
+            options=options,
+        )
+
+        content = response["message"]["content"]
+
+        # Update history
+        if use_history:
+            self.history.append({"role": "user", "content": prompt})
+            self.history.append({"role": "assistant", "content": content})
+
+        # Track usage (Ollama provides token counts)
+        input_tokens = response.get("prompt_eval_count", 0)
+        output_tokens = response.get("eval_count", 0)
+        self.tracker.track("ollama", self.model, input_tokens, output_tokens)
+
+        return LLMResponse(
+            content=content,
+            model=self.model,
+            provider="ollama",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            finish_reason="stop",
+        )
     
     async def stream(
         self,
@@ -647,6 +788,9 @@ class LLMService:
                 yield chunk
         elif self.provider == "gemini":
             async for chunk in self._stream_gemini(prompt, system_prompt):
+                yield chunk
+        elif self.provider == "ollama":
+            async for chunk in self._stream_ollama(prompt, system_prompt):
                 yield chunk
     
     async def _stream_anthropic(
@@ -729,6 +873,40 @@ class LLMService:
         for chunk in response:
             if chunk.text:
                 yield chunk.text
+
+    async def _stream_ollama(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+    ) -> AsyncGenerator[str, None]:
+        """Stream from Ollama."""
+        try:
+            import ollama
+            client = ollama.AsyncClient(host=self.settings.llm.ollama_base_url)
+        except ImportError as e:
+            raise ImportError(
+                "Ollama package not installed. Install with: pip install ollama "
+                "or install arxiv-agent with local-llm extras: pip install arxiv-agent[local-llm]"
+            ) from e
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        options = {
+            "temperature": self.temperature,
+            "num_predict": self.max_tokens,
+        }
+
+        async for chunk in await client.chat(
+            model=self.model,
+            messages=messages,
+            options=options,
+            stream=True,
+        ):
+            if chunk.get("message", {}).get("content"):
+                yield chunk["message"]["content"]
     
     def clear_history(self) -> None:
         """Clear conversation history."""
@@ -751,6 +929,8 @@ class LLMService:
             return self._list_openai_models()
         elif self.provider == "gemini":
             return self._list_gemini_models()
+        elif self.provider == "ollama":
+            return self._list_ollama_models()
         else:
             return []
 
@@ -802,6 +982,20 @@ class LLMService:
             return [
                 self.settings.llm.gemini_model_advanced,
                 self.settings.llm.gemini_model,
+            ]
+
+    def _list_ollama_models(self) -> list[str]:
+        """List Ollama models available on the local server."""
+        try:
+            client = self._get_ollama()
+            models = client.list()
+            return sorted([m["name"] for m in models.get("models", [])], reverse=True)
+        except Exception as e:
+            logger.warning(f"Failed to list Ollama models: {e}")
+            # Fallback to default models if server is not running or list fails
+            return [
+                self.settings.llm.ollama_model_advanced,
+                self.settings.llm.ollama_model,
             ]
 
 
