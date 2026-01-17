@@ -45,8 +45,8 @@ class LLMSettings(BaseSettings):
     openai_model_advanced: str = "gpt-4o"
     gemini_model: str = "gemini-1.5-flash"
     gemini_model_advanced: str = "gemini-1.5-pro"
-    ollama_model: str = "llama3.2"
-    ollama_model_advanced: str = "llama3.2"
+    ollama_model: str = "gemma3:4b"
+    ollama_model_advanced: str = "gemma3:4b"
     ollama_base_url: str = "http://localhost:11434"
     
     # Generation settings

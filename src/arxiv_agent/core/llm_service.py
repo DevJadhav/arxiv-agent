@@ -195,11 +195,11 @@ class LLMService:
             try:
                 import ollama
                 self._ollama_client = ollama.Client(host=self.settings.llm.ollama_base_url)
-            except ImportError:
+            except ImportError as e:
                 raise ImportError(
                     "Ollama package not installed. Install with: pip install ollama "
                     "or install arxiv-agent with local-llm extras: pip install arxiv-agent[local-llm]"
-                )
+                ) from e
         return self._ollama_client
     
     def generate(
@@ -988,8 +988,14 @@ class LLMService:
         """List Ollama models available on the local server."""
         try:
             client = self._get_ollama()
-            models = client.list()
-            return sorted([m["name"] for m in models.get("models", [])], reverse=True)
+            response = client.list()
+            # Handle both dict response and ListResponse object from ollama library
+            if hasattr(response, 'models'):
+                # ListResponse object with Model objects
+                return sorted([m.model for m in response.models], reverse=True)
+            else:
+                # Dict response (older API)
+                return sorted([m["name"] for m in response.get("models", [])], reverse=True)
         except Exception as e:
             logger.warning(f"Failed to list Ollama models: {e}")
             # Fallback to default models if server is not running or list fails
