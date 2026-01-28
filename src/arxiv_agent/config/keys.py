@@ -26,9 +26,9 @@ except ImportError:
 
 
 SERVICE_NAME = "arxiv-agent"
-PROVIDERS = ("anthropic", "openai", "gemini", "semantic_scholar")
+PROVIDERS = ("anthropic", "openai", "gemini", "ollama", "semantic_scholar")
 
-ProviderType = Literal["anthropic", "openai", "gemini", "semantic_scholar"]
+ProviderType = Literal["anthropic", "openai", "gemini", "ollama", "semantic_scholar"]
 
 
 class KeyStorage:

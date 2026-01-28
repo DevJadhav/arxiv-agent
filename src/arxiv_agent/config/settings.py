@@ -21,7 +21,7 @@ except ImportError:
 
 
 # Provider type alias
-LLMProviderType = Literal["anthropic", "openai", "gemini"]
+LLMProviderType = Literal["anthropic", "openai", "gemini", "ollama"]
 
 
 class AgentModelConfig(BaseSettings):
@@ -45,6 +45,9 @@ class LLMSettings(BaseSettings):
     openai_model_advanced: str = "gpt-4o"
     gemini_model: str = "gemini-1.5-flash"
     gemini_model_advanced: str = "gemini-1.5-pro"
+    ollama_model: str = "gemma3:4b"
+    ollama_model_advanced: str = "gemma3:4b"
+    ollama_base_url: str = "http://localhost:11434"
     
     # Generation settings
     max_tokens: int = 4096
@@ -64,6 +67,8 @@ class LLMSettings(BaseSettings):
             return self.openai_model_advanced if advanced else self.openai_model
         elif provider == "gemini":
             return self.gemini_model_advanced if advanced else self.gemini_model
+        elif provider == "ollama":
+            return self.ollama_model_advanced if advanced else self.ollama_model
         return self.anthropic_model
     
     def get_agent_config(self, agent: str) -> tuple[LLMProviderType, str]:

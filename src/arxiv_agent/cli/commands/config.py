@@ -164,6 +164,7 @@ def list_providers():
         ("anthropic", settings.llm.anthropic_model),
         ("openai", settings.llm.openai_model),
         ("gemini", settings.llm.gemini_model),
+        ("ollama", settings.llm.ollama_model),
     ]
     
     for provider, model in providers_info:
@@ -186,7 +187,7 @@ def set_default_provider(
         arxiv-agent config provider set openai
     """
     provider = provider.lower()
-    valid_providers = ["anthropic", "openai", "gemini"]
+    valid_providers = ["anthropic", "openai", "gemini", "ollama"]
     
     if provider not in valid_providers:
         console.print(f"[red]Invalid provider: {provider}[/]")
@@ -196,8 +197,8 @@ def set_default_provider(
     settings = get_settings()
     key_storage = get_key_storage()
     
-    # Check if API key is configured
-    if not key_storage.get_key(provider):
+    # Check if API key is configured (Ollama doesn't require an API key)
+    if provider != "ollama" and not key_storage.get_key(provider):
         console.print(f"[yellow]Warning:[/] No API key configured for {provider}")
         console.print(f"[dim]Run 'arxiv-agent config provider setup {provider}' first[/]")
         if not typer.confirm("Set as default anyway?"):
@@ -221,7 +222,7 @@ def setup_provider(
         arxiv-agent config provider setup anthropic
     """
     provider = provider.lower()
-    valid_providers = ["anthropic", "openai", "gemini"]
+    valid_providers = ["anthropic", "openai", "gemini", "ollama"]
     
     if provider not in valid_providers:
         console.print(f"[red]Invalid provider: {provider}[/]")
@@ -229,16 +230,61 @@ def setup_provider(
         raise typer.Exit(1)
     
     key_storage = get_key_storage()
+    settings = get_settings()
     
     # Show provider-specific info
     info = {
         "anthropic": "Get your API key from https://console.anthropic.com/",
         "openai": "Get your API key from https://platform.openai.com/api-keys",
         "gemini": "Get your API key from https://aistudio.google.com/apikey",
+        "ollama": "Ollama runs locally and doesn't require an API key. Configure the base URL if needed.",
     }
     
     console.print(f"\n[bold blue]🔧 Setup {provider.title()}[/]\n")
     console.print(f"[dim]{info[provider]}[/]\n")
+    
+    # Ollama setup is different - configure base URL instead of API key
+    if provider == "ollama":
+        current_url = settings.llm.ollama_base_url
+        console.print(f"Current base URL: [cyan]{current_url}[/]")
+        
+        new_url = typer.prompt(
+            "Enter Ollama base URL",
+            default=current_url,
+            show_default=True
+        )
+        
+        if new_url != current_url:
+            settings.llm.ollama_base_url = new_url
+            console.print(f"\n[green]✓[/] Ollama base URL updated to: [cyan]{new_url}[/]")
+        else:
+            console.print(f"\n[green]✓[/] Ollama base URL unchanged: [cyan]{current_url}[/]")
+        
+        # Test connection by listing models
+        console.print("\n[dim]Testing connection to Ollama server...[/]")
+        try:
+            from arxiv_agent.core.llm_service import get_llm_service
+            llm = get_llm_service(provider="ollama")
+            models = llm.list_models()
+            if models:
+                console.print(f"[green]✓[/] Connected! Found {len(models)} model(s): {', '.join(models[:5])}")
+                if len(models) > 5:
+                    console.print(f"  [dim]...and {len(models) - 5} more[/]")
+            else:
+                console.print("[yellow]Warning:[/] No models found. Pull a model with: ollama pull llama3.2")
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/] Could not connect to Ollama: {e}")
+            console.print("[dim]Make sure Ollama is running: ollama serve[/]")
+        
+        # Offer to set as default
+        if settings.llm.default_provider != provider:
+            if typer.confirm(f"\nSet {provider} as default provider?"):
+                settings.llm.default_provider = provider
+                console.print(f"[green]✓[/] {provider} is now the default provider")
+        
+        console.print(f"\n[dim]To persist the base URL, add to your shell profile:[/]")
+        console.print(f"  export ARXIV_AGENT_LLM__OLLAMA_BASE_URL={new_url}")
+        return
     
     # Check existing
     existing = key_storage.get_masked_key(provider)
@@ -261,7 +307,6 @@ def setup_provider(
     console.print(f"[dim]Key: {key_storage.get_masked_key(provider)}[/]")
     
     # Offer to set as default
-    settings = get_settings()
     if settings.llm.default_provider != provider:
         if typer.confirm(f"\nSet {provider} as default provider?"):
             settings.llm.default_provider = provider
@@ -376,7 +421,7 @@ def set_agent_model(
             import questionary
             provider = questionary.select(
                 "Select provider:",
-                choices=["anthropic", "openai", "gemini"],
+                choices=["anthropic", "openai", "gemini", "ollama"],
                 default=current_provider
             ).ask()
             
@@ -386,7 +431,7 @@ def set_agent_model(
             provider = current_provider
 
     if provider:
-         valid_providers = ["anthropic", "openai", "gemini"]
+         valid_providers = ["anthropic", "openai", "gemini", "ollama"]
          if provider not in valid_providers:
              console.print(f"[red]Invalid provider: {provider}[/]")
              raise typer.Exit(1)
